@@ -1,10 +1,12 @@
 
 import ws from "ws";
-import { OutgoingMessage, OutgoingResultMessageSuccess, ResultTypes } from '@zwave-js/server/dist/lib/outgoing_message.js';
+import { OutgoingMessage, ResultTypes } from '@zwave-js/server/dist/lib/outgoing_message.js';
 import { IncomingMessage } from '@zwave-js/server/dist/lib/incoming_message.js';
 import { ServerCommand } from "@zwave-js/server/dist/lib/command.js";
 import { randomUUID } from "crypto";
 import { EndpointCommand } from "@zwave-js/server/dist/lib/endpoint/command.js";
+import { CommandClasses } from "@zwave-js/core";
+import { APIMethodsOf } from "zwave-js/build/lib/commandclass/API";
 
 
 
@@ -52,13 +54,13 @@ export class ZWaveClient {
     });
   }
 
-  private waitingMessages = new Map<string, [(v:ResultTypes[keyof ResultTypes])=>void, (v:(OutgoingMessage & {type:"result"; success:false})["errorCode"])=>void]>();
-  public async sendMessage(msg:IncomingMessage) : Promise<ResultTypes[keyof ResultTypes]> {
+  private waitingMessages = new Map<string, [(v:ResultTypes[keyof ResultTypes]|void)=>void, (v:(OutgoingMessage & {type:"result"; success:false})["errorCode"])=>void]>();
+  public async sendMessage<T extends IncomingMessage["command"]>(msg:IncomingMessage&{command:T}) : Promise<T extends keyof ResultTypes ? ResultTypes[T] : void> {
     if (!msg.messageId) {
       msg.messageId = randomUUID();
     }
     return new Promise((resolve, reject)=>{
-      this.waitingMessages.set(msg.messageId, [resolve, reject]);
+      this.waitingMessages.set(msg.messageId, [resolve as (v:ResultTypes[keyof ResultTypes]|void)=>void, reject]);
       this.socket.send(
         JSON.stringify(msg)
       );
@@ -82,24 +84,27 @@ export class ZWaveClient {
     
   }
 
-  public async supportsCCApi(nodeId:number, commandClass:(IncomingMessage&{command:EndpointCommand.invokeCCAPI})["commandClass"]) {
+  public async supportsCCApi(nodeId:number, commandClass:CommandClasses) {
     return (await this.sendMessage({
       messageId: "",
       command: EndpointCommand.supportsCCAPI,
       nodeId: nodeId,
       commandClass: commandClass,
-    }) as ResultTypes[EndpointCommand.supportsCCAPI]).supported;
+    })).supported;
   }
 
-  public async invokeCCApi(nodeId:number, commandClass:(IncomingMessage&{command:EndpointCommand.invokeCCAPI})["commandClass"], methodName:string, ...args:any[]) {
-    return (await this.sendMessage({
+  public async invokeCCApi<CC extends CommandClasses, TMethod extends (keyof TAPI & string), TAPI extends Record<
+      string, (...args: any[]) => any> = CommandClasses extends CC ? any : APIMethodsOf<CC> >
+  (nodeId:number, commandClass: CC, methodName: TMethod, ...args: Parameters<TAPI[TMethod]>): Promise<ReturnType<TAPI[TMethod]>> {
+    const result = await this.sendMessage({
       messageId: "",
       command: EndpointCommand.invokeCCAPI,
       nodeId: nodeId,
       commandClass: commandClass,
       methodName: methodName,
       args: args,
-    })as ResultTypes[EndpointCommand.invokeCCAPI]).response;
+    });
+    return result.response as ReturnType<TAPI[TMethod]>;
   }
 
   public getNode(nodeId:number) {
@@ -110,39 +115,41 @@ export class ZWaveClient {
 class Node {
   constructor(private readonly client:ZWaveClient, private readonly nodeId:number) {}
 
-  public async invokeCCApi(commandClass:(IncomingMessage&{command:EndpointCommand.invokeCCAPI})["commandClass"], methodName:string, ...args:any[]) {
+  public async invokeCCApi<CC extends CommandClasses, TMethod extends (keyof TAPI & string), 
+    TAPI extends Record<string, (...args: any[]) => any> = CommandClasses extends CC ? any : APIMethodsOf<CC> >
+  (commandClass: CC, methodName: TMethod, ...args: Parameters<TAPI[TMethod]>): Promise<ReturnType<TAPI[TMethod]>> {
     return this.client.invokeCCApi(this.nodeId, commandClass, methodName, ...args);
   }
 
   public async supportsAssoc() {
     return (await Promise.all([
-      this.client.supportsCCApi(this.nodeId, 0x85),
-      this.client.supportsCCApi(this.nodeId, 0x59),
+      this.client.supportsCCApi(this.nodeId, CommandClasses.Association),
+      this.client.supportsCCApi(this.nodeId, CommandClasses["Association Group Information"]),
     ])).reduce((a, b)=>a&&b);
   }
 
   public async getGroupCount() {
-    return await this.invokeCCApi(0x85, "getGroupCount") as Promise<number|undefined>;
+    return this.invokeCCApi(CommandClasses.Association, "getGroupCount");
   }
 
   public async getGroup(groupId:number) {
-    return this.invokeCCApi(0x85, "getGroup", groupId) as Promise<{ maxNodes: number; nodeIds: readonly number[] } | undefined>;
+    return this.invokeCCApi(CommandClasses.Association, "getGroup", groupId);
   }
 
   async addNodeIds(groupId: number, ...nodeIds: number[]) {
-    await this.invokeCCApi(0x85, "addNodeIds", groupId, ...nodeIds);
+    await this.invokeCCApi(CommandClasses.Association, "addNodeIds", groupId, ...nodeIds);
   }
 
   async removeNodeIds(options: {groupId?: number; nodeIds?: number[] }) {
-    await this.invokeCCApi(0x85, "removeNodeIds", options);
+    await this.invokeCCApi(CommandClasses.Association, "removeNodeIds", options);
   }
 
 
   async getGroupName(groupId: number) {
-    return this.invokeCCApi(0x59, "getGroupName", groupId) as Promise<string | undefined>;
+    return this.invokeCCApi(CommandClasses["Association Group Information"], "getGroupName", groupId);
   }
 
   async getGroupInfo(groupId: number, refreshCache: boolean = false) {
-    return this.invokeCCApi(0x59, "getGroupInfo", groupId, refreshCache) as Promise<{ mode: number; profile: number; eventCode: number; hasDynamicInfo: boolean } | undefined>;
+    return this.invokeCCApi(CommandClasses["Association Group Information"], "getGroupInfo", groupId, refreshCache);
   }
 }
