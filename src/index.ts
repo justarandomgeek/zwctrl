@@ -1,9 +1,6 @@
 #!/usr/bin/env node
 
 import { program } from 'commander';
-import { pipeline } from 'stream';
-import { promisify } from 'util';
-const pipelineAsync = promisify(pipeline);
 import { ZWaveClient } from './zwave.js';
 
 async function fromAsync<T>(gen: AsyncIterable<T>): Promise<T[]> {
