@@ -3,18 +3,6 @@
 import { program } from 'commander';
 import { ZWaveClient } from './zwave.js';
 
-async function fromAsync<T>(gen: AsyncIterable<T>): Promise<T[]> {
-  const out: T[] = [];
-  for await (const x of gen) {
-    out.push(x);
-  }
-  return out;
-}
-
-type ProgramOptions = {
-
-};
-
 async function prepareZWaveClient() {
   const client = new ZWaveClient("ws://home.jarg.io:3333");
   const version = await client.VersionInfo;
